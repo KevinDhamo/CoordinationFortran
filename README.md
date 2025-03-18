@@ -11,10 +11,10 @@ This program efficiently calculates coordination numbers between different atom 
 - **Fast Coordination Analysis**: Uses cell lists for O(N) performance instead of the naive O(N²) approach
 - **Multi-core Processing**: Parallel processing with OpenMP for faster calculations
 - **Flexible Input Options**: 
-  - Supports LAMMPS trajectory files (.dump, .dmp) and data files
+  - Supports LAMMPS trajectory files, XYZ, and others (work in progress)
   - Dynamic box dimensions support (can read changing box sizes from trajectory)
 - **Advanced Selection Capabilities**: 
-  - Analyze specific atom types or ranges (e.g., "1-100,200,300-400")
+  - Analyze specific atom types or ranges (e.g., "1-100,200,300-400" or "1,5,85,999")
   - Include/exclude specific atom types
 - **Detailed Output**: 
   - Coordination numbers between all atom types
@@ -43,7 +43,7 @@ make benchmark
 
 ## Usage
 
-1. Create a `setup.txt` configuration file (see [Configuration](#configuration) section)
+1. Create a `setup.txt` configuration file, there is an included sample one(see [Configuration](#configuration) section)
 2. Place your LAMMPS data file and trajectory file in the working directory
 3. Run the analysis:
 
