@@ -5,88 +5,62 @@
 ################################################################################
 # SYSTEM CONFIGURATION
 ################################################################################
-# Number of CPU cores to use (0 = use all available)
 Cores=4
-
-# Atom Types Configuration
 ATOM_TYPES=3
 
-# Format: TypeID Name Mass
 TYPE_1=Li
 TYPE_2=Li
 TYPE_3=O
 
-# Coordination Pair Cutoffs (Angstroms)
-# Format: Type1 Type2 Cutoff
 PAIR_CUTOFF_1_1=2.5
-PAIR_CUTOFF_1_2=3.2
-PAIR_CUTOFF_1_3=3.1
-PAIR_CUTOFF_2_2=3.3
-PAIR_CUTOFF_2_3=3.2
-PAIR_CUTOFF_3_3=3.4
+PAIR_CUTOFF_1_2=2.5
+PAIR_CUTOFF_1_3=2.5
+PAIR_CUTOFF_2_2=2.5
+PAIR_CUTOFF_2_3=2.5
+PAIR_CUTOFF_3_3=2.5
 
 ################################################################################
 # INPUT/OUTPUT FILES                                                           #
 ################################################################################
-# Path to LAMMPS data file containing atom counts and box dimensions
 INPUT_DATA=lammps.data
-
-# Path to trajectory file (LAMMPS .dmp or XYZ format)
 INPUT_TRAJECTORY=trajectory.dmp
-
-# Path to output coordination data file
 OUTPUT_FILE=coordination_numbers.dat
 
 ################################################################################
 # ANALYSIS OPTIONS                                                             #
 ################################################################################
-# Frame Selection
-START_FRAME=0          # Start from the beginning (0-indexed)
-END_FRAME=all          # Process all frames ("unlimited" or frame number)
-
-# Atom Selection for Analysis
-# Format: Ranges (e.g., "1-200,500-700") or "all"
+START_FRAME=0
+END_FRAME=all
 SELECTED_ATOMS=all
-
-# Show neighbor atom IDs in output (significantly reduces performance)
 SHOW_NEIGHBORS=no
-
-################################################################################
-# I/O PERFORMANCE OPTIONS                                                      #
-################################################################################
-# Enable output caching for improved I/O performance with large files
-# Set to 'yes' to enable after testing is complete
-ENABLE_OUTPUT_CACHE=no
-
-# How frequently to flush cached output to disk (in frames)
-OUTPUT_CACHE_FLUSH_INTERVAL=10
-
-# How frequently to update the progress display (in frames)
-PROGRESS_UPDATE_INTERVAL=5
+USE_TRAJECTORY_BOX=no
 
 ################################################################################
 # TRAJECTORY PARSING                                                           #
 ################################################################################
-# Custom trajectory header format for LAMMPS dump files
-# This helps parser correctly identify column indices
 TRAJECTORY_HEADER=ITEM: ATOMS id type x y z
 
-# Explicit column index mapping (overrides automatic detection)
-# Uncomment and set values if your header uses non-standard column names
+################################################################################
+# ADVANCED SPATIAL PARTITIONING
+################################################################################
+CELL_SIZE_FACTOR=1.0                                               # TBA
+MAX_ATOMS_PER_CELL=50                                              # TBA
+REBUILD_THRESHOLD=0.1                                              # TBA
+CELL_UPDATE_FREQ=20
+SELECTIVE_REBUILD=no
+
+################################################################################
+# OUTPUT CONFIGURATION
+################################################################################
+MAX_NEIGHBORS=50                                                   # TBA
+PROGRESS_BAR_WIDTH=50                                              # TBA
+VERBOSE=no                                                         # TBA
+
+################################################################################
+# EXPLICIT COLUMN MAPPING
+################################################################################
 # COLUMN_ID_INDEX=1
 # COLUMN_TYPE_INDEX=2
 # COLUMN_X_INDEX=3
 # COLUMN_Y_INDEX=4
 # COLUMN_Z_INDEX=5
-
-################################################################################
-# PERFORMANCE SETTINGS                                                         #
-################################################################################
-# Cell List Configuration
-CELL_UPDATE_FREQ=20      # Update cell list every N frames
-SELECTIVE_REBUILD=yes    # Enable selective cell rebuilding for better performance
-
-# Verlet List Configuration (experimental, disabled by default)
-USE_VERLET_LISTS=no      # Enable Verlet lists for coordination calculation
-VERLET_SKIN_DISTANCE=1.0 # Extra distance beyond cutoff for Verlet list building
-VERLET_REBUILD_THRESHOLD=0.5 # Fraction of skin distance to trigger rebuild
