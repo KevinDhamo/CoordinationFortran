@@ -183,7 +183,7 @@ contains
     !>
     !> Updates the cell assignments for atoms based on their current positions.
     !> Supports three update modes:
-    !> 1. Complete rebuild (force_update=.true.)
+    !> 1. Complete rebuild (force_update=.true. or force_rebuild=.true.)
     !> 2. Selective rebuild (for atoms that moved significantly)
     !> 3. Skip update (if no atom moved enough)
     !>
@@ -193,23 +193,29 @@ contains
     !> @param[in] box_length Box dimensions in x, y, z
     !> @param[in] frame Current frame number
     !> @param[in] include_mask Mask indicating which atom types to include
-    subroutine update_cell_list(coords, atom_types, n_atoms, box_length, frame, include_mask)
+    !> @param[in] force_rebuild Optional flag to force a complete rebuild (default: .false.)
+    subroutine update_cell_list(coords, atom_types, n_atoms, box_length, frame, include_mask, force_rebuild)
         real(dp), intent(in) :: coords(:,:)
         integer, intent(in) :: atom_types(:)
         integer, intent(in) :: n_atoms
         real(dp), intent(in) :: box_length(3)
         integer, intent(in) :: frame
         logical, intent(in) :: include_mask(:)
+        logical, intent(in), optional :: force_rebuild
         
         integer :: ix, iy, iz, i, cell_x, cell_y, cell_z
         real(dp) :: max_displacement, dx, dy, dz, disp_sq
-        logical :: force_update, any_selective_updates
+        logical :: force_update, any_selective_updates, do_force_rebuild
         
         ! Initialize variables
         any_selective_updates = .false.
         
+        ! Process optional force_rebuild parameter
+        do_force_rebuild = .false.
+        if (present(force_rebuild)) do_force_rebuild = force_rebuild
+        
         ! Check if full update is needed
-        force_update = (last_cell_update == -1)
+        force_update = (last_cell_update == -1) .or. do_force_rebuild
         
         ! Custom cell update frequency from setup file
         if (.not. force_update .and. cell_update_freq > 0 .and. &
