@@ -3,7 +3,7 @@ module output_io_mod
     use types_mod
     use config_mod
     use error_mod
-    use coordination_mod, only: pairs, n_pairs, coord_neighbors, show_neighbors, verlet_stats
+    use coordination_mod
     use cell_list_mod, only: num_cell_resets, num_cell_updates, num_selective_updates, &
                             get_cell_statistics, total_empty_cells, &
                             max_atoms_in_cell, min_atoms_in_cell, &
@@ -93,7 +93,7 @@ contains
     !>
     !> Writes the coordination numbers for all atoms in the current frame
     !> to the output file. If neighbor tracking is enabled, also writes
-    !> the IDs of neighboring atoms.
+    !> the IDs of neighboring atoms in a consistent, parsable format.
     !>
     !> @param[in] frame_number Current frame number
     !> @param[in] elements Array of element names for each atom
@@ -152,23 +152,14 @@ contains
                 
                 ! Add coordination numbers with neighbor lists
                 do j = 1, n_pairs
-                    ! Add coordination number - first one gets a space
-                    if (j == 1) then
-                        write(temp_str, '(I5)') coord_numbers_local(i,j)
-                        buffer = trim(buffer) // " " // trim(adjustl(temp_str))
-                    else
-                        write(temp_str, '(I5)') coord_numbers_local(i,j)
-                        buffer = trim(buffer) // "   " // trim(adjustl(temp_str))
-                    end if
+                    ! Add coordination number with consistent spacing
+                    write(temp_str, '(I6)') coord_numbers_local(i,j)
+                    buffer = trim(buffer) // " " // adjustl(temp_str)
                     
                     ! Add neighbor atom IDs if available
                     if (coord_numbers_local(i,j) > 0) then
-                        ! First pair gets a space, others no space before parenthesis
-                        if (j == 1) then
-                            buffer = trim(buffer) // " ("
-                        else
-                            buffer = trim(buffer) // "("
-                        end if
+                        ! Always use the same format with no spaces to make parsing easier
+                        buffer = trim(buffer) // "("
                         
                         ! Add up to MAX_NEIGHBORS neighbor IDs
                         do k = 1, min(coord_numbers_local(i,j), size(coord_neighbors, 3))
