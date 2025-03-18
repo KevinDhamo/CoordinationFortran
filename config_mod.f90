@@ -21,7 +21,7 @@ module config_mod
     ! File names and paths
     !===============================================================================
     !> Path to the input trajectory file
-    character(len=*), parameter, public :: INPUT_FILE = 'trajectory.dmp'
+    character(len=*), parameter, public :: INPUT_FILE = 'trajectory.dump'
     
     !> Path to the output coordination data file
     character(len=*), parameter, public :: OUTPUT_FILE = 'coordination_numbers.dat'
@@ -63,7 +63,7 @@ module config_mod
     real(dp), parameter, public :: REBUILD_THRESHOLD = 0.1_dp
 
     !===============================================================================
-    ! Verlet list configuration
+    ! Verlet list configuration (kept for compatibility but not used)
     !===============================================================================
     !> Whether to use Verlet lists for coordination calculations
     logical, public :: use_verlet_lists = .false.
@@ -122,6 +122,9 @@ module config_mod
     !> Flag to show atom neighbor IDs in output
     logical, public :: show_atom_neighbors = .false.
 
+    !> Flag to use box dimensions from trajectory file instead of data file
+    logical, public :: use_trajectory_box = .false.
+
     !===============================================================================
     ! Type definition for configuration key-value pairs
     !===============================================================================
@@ -167,8 +170,9 @@ contains
         trajectory_header_format = ''
         selected_atoms = ''
         show_atom_neighbors = .false.
+        use_trajectory_box = .false.
         
-        ! Initialize Verlet list parameters
+        ! Initialize Verlet list parameters (disabled by default)
         use_verlet_lists = .false.
         verlet_skin_distance = 1.0_dp
         verlet_rebuild_threshold = 0.5_dp
@@ -405,15 +409,25 @@ contains
                     else
                         show_atom_neighbors = .false.
                     end if
-                    
-                ! Verlet list parameters
-                case('USE_VERLET_LISTS')
+                
+                case('USE_TRAJECTORY_BOX')
                     if (trim(value_str) == 'yes' .or. &
                         trim(value_str) == 'true' .or. &
                         trim(value_str) == '1') then
-                        use_verlet_lists = .true.
+                        use_trajectory_box = .true.
                     else
-                        use_verlet_lists = .false.
+                        use_trajectory_box = .false.
+                    end if
+                    
+                ! Verlet list parameters (kept for compatibility but ignored)
+                case('USE_VERLET_LISTS')
+                    ! Keep parsing but ignore the value - we always use false
+                    if (trim(value_str) == 'yes' .or. &
+                        trim(value_str) == 'true' .or. &
+                        trim(value_str) == '1') then
+                        ! Silently ignore - we're not using Verlet lists
+                    else
+                        ! This is the default anyway
                     end if
                     
                 case('VERLET_SKIN_DISTANCE')
