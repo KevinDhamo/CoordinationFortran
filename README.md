@@ -28,7 +28,7 @@ This program efficiently calculates coordination numbers between different atom 
 
 ```bash
 # Clone the repository
-git clone https://github.com/username/coordination-analysis.git
+git clone repository
 cd coordination-analysis
 
 # Compile optimized version
