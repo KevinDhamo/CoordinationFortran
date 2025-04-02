@@ -140,6 +140,22 @@ contains
                        box_length(2)/n_cells_y, &
                        box_length(3)/n_cells_z)
 
+        ! Validate the cell size is at least equal to the maximum cutoff
+        if (cell_size < max_cutoff) then
+            write(*,*) "WARNING: Cell size smaller than cutoff distance."
+            write(*,*) "  Cell size:", cell_size, "Maximum cutoff:", max_cutoff
+            write(*,*) "  This may cause missing atom pairs in coordination calculation."
+            write(*,*) "  Adjusting cell size to match cutoff."
+            
+            ! Force cell size to be at least equal to cutoff
+            cell_size = max_cutoff
+            
+            ! Recalculate grid dimensions
+            n_cells_x = max(1, floor(box_length(1)/cell_size))
+            n_cells_y = max(1, floor(box_length(2)/cell_size))
+            n_cells_z = max(1, floor(box_length(3)/cell_size))
+        end if
+
         ! Allocate cell grid
         if (allocated(cells)) deallocate(cells)
         allocate(cells(n_cells_x, n_cells_y, n_cells_z), stat=alloc_stat)
@@ -515,13 +531,12 @@ contains
         integer :: dx, dy, dz, nx, ny, nz
         
         n_neighbors = 0
-        do dz = 0, 1
+        ! Check all 26 neighboring cells (full 3×3×3 neighborhood excluding center)
+        do dz = -1, 1
             do dy = -1, 1
                 do dx = -1, 1
-                    ! Skip cells that are not touching the current cell
-                    if (dx == -1 .and. dy == -1 .and. dz == 0) cycle
-                    if (dx == -1 .and. dy == 1 .and. dz == 0) cycle
-                    if (dx == -1 .and. dz == 1) cycle
+                    ! Skip the cell itself (center) as it's handled separately
+                    if (dx == 0 .and. dy == 0 .and. dz == 0) cycle
                     
                     ! Apply periodic boundary conditions
                     nx = modulo(ix+dx-1, n_cells_x) + 1
@@ -767,6 +782,22 @@ end subroutine find_neighbors_within_cutoff
         type(cell_type), intent(out) :: cell
         cell = cells(ix, iy, iz)
     end subroutine get_cell
+
+    !> @brief Calculate unique cell index from 3D indices
+    !>
+    !> Helper function to create a unique 1D index for each cell
+    !> from its 3D grid coordinates. Used for cell pair ordering.
+    !>
+    !> @param[in] ix X index of the cell
+    !> @param[in] iy Y index of the cell
+    !> @param[in] iz Z index of the cell
+    !> @return Unique 1D index for the cell
+    function cell_index(ix, iy, iz) result(idx)
+        integer, intent(in) :: ix, iy, iz
+        integer :: idx
+        
+        idx = ix + (iy-1)*n_cells_x + (iz-1)*n_cells_x*n_cells_y
+    end function cell_index
     
     !> @brief Collect statistics on cell usage
     !>
