@@ -80,10 +80,10 @@ contains
         end if
         
         ! Add note about calculation method
-        if (use_verlet_lists) then
-            write(output_unit,'(A)') "# Note: Using hybrid Cell-List/Verlet-List method for coordination calculation"
+        if (use_cell_list) then
+            write(output_unit,'(A)') "# Note: Using Cell-List method for coordination calculation"
         else
-            write(output_unit,'(A)') "# Note: Using traditional Cell-List method for coordination calculation"
+            write(output_unit,'(A)') "# Note: Using direct O(n²) method for coordination calculation"
         end if
         
         write(output_unit,'(A)') "# Frame data follows"
@@ -205,9 +205,12 @@ contains
         
         real(dp), allocatable :: type_avg_coord(:,:)
         integer, allocatable :: type_counts(:)
-        integer :: i, j, alloc_stat
+        integer :: i, j, k, alloc_stat
         real(dp) :: cell_stats(4)
         real(dp) :: empty_cell_percentage
+        logical, allocatable :: pair_in_setup(:)
+        real(dp), allocatable :: avg_pair_values(:)
+        integer :: type1, type2   ! Add these declarations
         
         ! Allocate arrays for statistics with error checking
         allocate(type_avg_coord(n_types, n_pairs), type_counts(n_types), stat=alloc_stat)
@@ -245,54 +248,129 @@ contains
             end if
         end do
         
-        ! Get cell list statistics safely
-        cell_stats = get_cell_statistics()
+        ! Only report cell list statistics if using cell list method
+        if (use_cell_list) then
+            ! Get cell list statistics safely
+            cell_stats = get_cell_statistics()
+            
+            ! Calculate percentage of empty cells
+            empty_cell_percentage = (total_empty_cells * 100.0) / &
+                                    max(1, n_cells_x * n_cells_y * n_cells_z)
+            
+            !===============================================================================
+            ! Cell list statistics
+            !===============================================================================
+            write(*,'(A)') " CELL LIST STATISTICS"
+            write(*,'(A)') " -------------------"
+            write(*,'(A,I0)') " Complete cell list rebuilds:      ", num_cell_resets
+            write(*,'(A,I0)') " Cell list maintenance updates:    ", num_cell_updates
+            write(*,'(A,I0)') " Selective cell rebuilds:          ", num_selective_updates
+            write(*,'(A,I0,A,F5.1,A)') " Average empty cells:              ", total_empty_cells, &
+                                     " (", empty_cell_percentage, "%)"
+            write(*,'(A,F10.2)') " Average atoms per non-empty cell: ", avg_atoms_per_cell
+            write(*,'(A,I0,A,I0)') " Min/Max atoms per cell:           ", min_atoms_in_cell, "/", max_atoms_in_cell
+            write(*,*)
+        end if
         
-        ! Calculate percentage of empty cells
-        empty_cell_percentage = (total_empty_cells * 100.0) / &
-                                max(1, n_cells_x * n_cells_y * n_cells_z)
+        ! Allocate arrays for tracking which pairs were defined in setup
+        allocate(pair_in_setup(n_pairs), avg_pair_values(n_pairs), stat=alloc_stat)
+        if (alloc_stat /= 0) then
+            call handle_error("Failed to allocate pair tracking arrays", ERR_ALLOCATION)
+            return
+        end if
+        
+        ! Initialize pair arrays
+        pair_in_setup = .false.
+        avg_pair_values = 0.0_dp
+        
+        ! Mark pairs that were defined in setup (not using default cutoff)
+        do j = 1, n_pairs
+            type1 = pairs(j)%type1_id
+            type2 = pairs(j)%type2_id
+            
+            ! Skip pairs with empty type names or no atoms
+            if (len_trim(atom_info(type1)%name) == 0 .or. len_trim(atom_info(type2)%name) == 0) cycle
+            if (type_counts(type1) == 0 .or. type_counts(type2) == 0) cycle
+            
+            ! Consider pair as defined in setup if it doesn't use default cutoff or is self-interaction
+            if (pairs(j)%cutoff /= DEFAULT_CUTOFF .or. type1 == type2) then
+                pair_in_setup(j) = .true.
+            end if
+        end do
         
         !===============================================================================
-        ! Cell list statistics
-        !===============================================================================
-        write(*,'(A)') " CELL LIST STATISTICS"
-        write(*,'(A)') " -------------------"
-        write(*,'(A,I0)') " Complete cell list rebuilds:      ", num_cell_resets
-        write(*,'(A,I0)') " Cell list maintenance updates:    ", num_cell_updates
-        write(*,'(A,I0)') " Selective cell rebuilds:          ", num_selective_updates
-        write(*,'(A,I0,A,F5.1,A)') " Average empty cells:              ", total_empty_cells, &
-                                 " (", empty_cell_percentage, "%)"
-        write(*,'(A,F10.2)') " Average atoms per non-empty cell: ", avg_atoms_per_cell
-        write(*,'(A,I0,A,I0)') " Min/Max atoms per cell:           ", min_atoms_in_cell, "/", max_atoms_in_cell
-        write(*,*)
-        
-        !===============================================================================
-        ! Coordination statistics
+        ! Coordination statistics - simplified to show only unique pair types
         !===============================================================================
         write(*,'(A)') " COORDINATION STATISTICS"
         write(*,'(A)') " ----------------------"
+        
+        ! Display atom counts by type first
+        write(*,'(A)') " Atom counts by type:"
+        k = 0  ! Counter for valid types
         do i = 1, n_types
-            if (atom_info(i)%include) then
-                write(*,'(A,I0,A,A,A,I0,A)') " Type ", i, " (", trim(atom_info(i)%name), ") - ", &
-                    type_counts(i), " atoms:"
-                    
-                do j = 1, n_pairs
-                    if (pairs(j)%type1_id == i .or. pairs(j)%type2_id == i) then
-                        ! Format according to ideal output format
-                        write(*,'(A,A,A,I0,A,A,A,I0,A,F10.3)') &
-                            "   With ", trim(atom_info(pairs(j)%type1_id)%name), "-", &
-                            pairs(j)%type1_id, " to ", &
-                            trim(atom_info(pairs(j)%type2_id)%name), "-", &
-                            pairs(j)%type2_id, ":     ", type_avg_coord(i,j)
-                    end if
-                end do
-                write(*,*)
+            if (atom_info(i)%include .and. type_counts(i) > 0 .and. len_trim(atom_info(i)%name) > 0) then
+                write(*,'(A,I0,A,A,A,I0,A)') "   Type ", i, " (", trim(atom_info(i)%name), "): ", &
+                    type_counts(i), " atoms"
+                k = k + 1
             end if
         end do
+        
+        if (k == 0) then
+            write(*,'(A)') "   No valid atom types found"
+        end if
+        write(*,*)
+        
+        ! Calculate average coordination values for each pair type
+        do j = 1, n_pairs
+            type1 = pairs(j)%type1_id
+            type2 = pairs(j)%type2_id
+            
+            ! Only process valid pairs
+            if (pair_in_setup(j) .and. type_counts(type1) > 0 .and. type_counts(type2) > 0) then
+                if (type1 == type2) then
+                    ! For same-type pairs (like Na-Na), just use the direct average
+                    avg_pair_values(j) = type_avg_coord(type1, j)
+                else
+                    ! For different types (like Na-Cl), calculate weighted average
+                    avg_pair_values(j) = (type_avg_coord(type1, j) * type_counts(type1) + &
+                                         type_avg_coord(type2, j) * type_counts(type2)) / &
+                                         (type_counts(type1) + type_counts(type2))
+                end if
+            end if
+        end do
+        
+        ! Display average coordination numbers
+        write(*,'(A)') " Average coordination numbers by pair type:"
+        k = 0  ! Counter for valid pairs
+        do j = 1, n_pairs
+            type1 = pairs(j)%type1_id
+            type2 = pairs(j)%type2_id
+            
+            ! Only show pairs that were defined in setup and have valid types with atoms
+            if (pair_in_setup(j) .and. &
+                len_trim(atom_info(type1)%name) > 0 .and. &
+                len_trim(atom_info(type2)%name) > 0 .and. &
+                type_counts(type1) > 0 .and. type_counts(type2) > 0) then
+                
+                write(*,'(A,A,A,I0,A,A,A,I0,A,F10.3)') &
+                    "   ", trim(atom_info(type1)%name), "-", &
+                    type1, " to ", &
+                    trim(atom_info(type2)%name), "-", &
+                    type2, ":     ", avg_pair_values(j)
+                k = k + 1
+            end if
+        end do
+        
+        if (k == 0) then
+            write(*,'(A)') "   No valid pair interactions defined"
+        end if
+        write(*,*)
         
         ! Clean up arrays
         if (allocated(type_avg_coord)) deallocate(type_avg_coord)
         if (allocated(type_counts)) deallocate(type_counts)
+        if (allocated(pair_in_setup)) deallocate(pair_in_setup)
+        if (allocated(avg_pair_values)) deallocate(avg_pair_values)
     end subroutine write_final_report
 
     !> @brief Clean up output resources
