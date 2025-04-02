@@ -50,6 +50,9 @@ module config_mod
     !===============================================================================
     ! Cell list configuration
     !===============================================================================
+    !> Whether to use cell lists for coordination calculations
+    logical, public :: use_cell_list = .true.
+    
     !> Frequency of cell list updates (in frames)
     integer, public :: cell_update_freq = 5
     
@@ -88,7 +91,9 @@ module config_mod
     
     !> Number of CPU cores requested for parallel execution
     integer, public :: requested_cores = 0
-    
+    !> Flag to enable/disable angle type filtering
+    logical, public :: angle_filter_types = .true.
+
     !> Start processing from this frame (0 = beginning)
     integer, public :: start_frame = 0
     
@@ -124,6 +129,23 @@ module config_mod
 
     !> Flag to use box dimensions from trajectory file instead of data file
     logical, public :: use_trajectory_box = .false.
+    
+    !===============================================================================
+    ! Angle calculation parameters
+    !===============================================================================
+    !> Flag to enable angle calculation
+    logical, public :: calculate_angles = .false.
+    
+    !> Path to angle output file
+    character(len=256), public :: angle_output_file = 'angles.dat'
+    
+    !> Type triplet filtering array
+    logical, allocatable, public :: angle_type_mask(:,:,:)
+
+! Add these to the public variables in config_mod.f90
+real(dp), public :: min_angle_degree = 0.0_dp
+real(dp), public :: max_angle_degree = 180.0_dp
+integer, public :: angle_batch_size = 1000
 
     !===============================================================================
     ! Type definition for configuration key-value pairs
@@ -171,6 +193,11 @@ contains
         selected_atoms = ''
         show_atom_neighbors = .false.
         use_trajectory_box = .false.
+        calculate_angles = .false.
+        angle_output_file = 'angles.dat'
+        
+        ! Initialize cell list parameter
+        use_cell_list = .true.  ! Default to using cell list method
         
         ! Initialize Verlet list parameters (disabled by default)
         use_verlet_lists = .false.
@@ -266,6 +293,67 @@ contains
         
         success = .true.
     end subroutine parse_cutoff_key
+    
+    !> @brief Parse angle types key to extract triplet indices
+    !>
+    !> Parses an angle key string (e.g., "ANGLE_TYPES_1_2_3")
+    !> to extract the atom type triplet indices.
+    !>
+    !> @param[in] key_str Key string to parse
+    !> @param[out] type1 First atom type index (central atom)
+    !> @param[out] type2 Second atom type index (neighbor 1)
+    !> @param[out] type3 Third atom type index (neighbor 2)
+    !> @param[out] success Flag indicating if parsing was successful
+    subroutine parse_angle_key(key_str, type1, type2, type3, success)
+        character(len=*), intent(in) :: key_str
+        integer, intent(out) :: type1, type2, type3
+        logical, intent(out) :: success
+        
+        integer :: underscore_pos1, underscore_pos2, io_stat
+        character(len=32) :: prefix, type1_str, type2_str, type3_str, remainder
+        
+        ! Initialize outputs
+        success = .false.
+        type1 = -1
+        type2 = -1
+        type3 = -1
+        
+        ! Check if it's an angle types key
+        prefix = "ANGLE_TYPES_"
+        if (len_trim(key_str) <= len_trim(prefix)) return
+        if (key_str(1:len_trim(prefix)) /= prefix) return
+        
+        ! Extract the part after the prefix
+        remainder = key_str(len_trim(prefix)+1:)
+        
+        ! Find the first underscore
+        underscore_pos1 = index(remainder, "_")
+        if (underscore_pos1 <= 1) return
+        
+        ! Extract first type
+        type1_str = remainder(1:underscore_pos1-1)
+        remainder = remainder(underscore_pos1+1:)
+        
+        ! Find the second underscore
+        underscore_pos2 = index(remainder, "_")
+        if (underscore_pos2 <= 1) return
+        
+        ! Extract second and third types
+        type2_str = remainder(1:underscore_pos2-1)
+        type3_str = remainder(underscore_pos2+1:)
+        
+        ! Convert to integers
+        read(type1_str, *, iostat=io_stat) type1
+        if (io_stat /= 0) return
+        
+        read(type2_str, *, iostat=io_stat) type2
+        if (io_stat /= 0) return
+        
+        read(type3_str, *, iostat=io_stat) type3
+        if (io_stat /= 0) return
+        
+        success = .true.
+    end subroutine parse_angle_key
  
     !> @brief Read simulation setup from the setup file
     !>
@@ -295,6 +383,7 @@ contains
         character(len=256) :: comment
         integer :: comment_pos
         logical :: success_parse
+        integer :: type3
         
         ! Initialize return value
         success = .false.
@@ -385,6 +474,15 @@ contains
                         selective_rebuild = .false.
                     end if
                 
+                case('USE_CELL_LIST')
+                    if (trim(value_str) == 'yes' .or. &
+                        trim(value_str) == 'true' .or. &
+                        trim(value_str) == '1') then
+                        use_cell_list = .true.
+                    else
+                        use_cell_list = .false.
+                    end if
+                
                 case('INPUT_DATA')
                     input_data_file = trim(value_str)
                 
@@ -418,6 +516,37 @@ contains
                     else
                         use_trajectory_box = .false.
                     end if
+                    
+                ! Angle calculation parameters
+                case('CALCULATE_ANGLES')
+                    if (trim(value_str) == 'yes' .or. &
+                        trim(value_str) == 'true' .or. &
+                        trim(value_str) == '1') then
+                        calculate_angles = .true.
+                    else
+                        calculate_angles = .false.
+                    end if
+case('ANGLE_FILTER_TYPES')
+    if (trim(value_str) == 'yes' .or. &
+        trim(value_str) == 'true' .or. &
+        trim(value_str) == '1') then
+        angle_filter_types = .true.
+    else
+        angle_filter_types = .false.
+    end if
+                case('MIN_ANGLE_DEGREE')
+    read(value_str, *, iostat=io_stat) min_angle_degree
+    if (io_stat /= 0) min_angle_degree = 0.0_dp
+    
+case('MAX_ANGLE_DEGREE')
+    read(value_str, *, iostat=io_stat) max_angle_degree
+    if (io_stat /= 0) max_angle_degree = 180.0_dp
+    
+case('ANGLE_BATCH_SIZE')
+    read(value_str, *, iostat=io_stat) angle_batch_size
+    if (io_stat /= 0) angle_batch_size = 1000
+                case('ANGLE_OUTPUT_FILE')
+                    angle_output_file = trim(value_str)
                     
                 ! Verlet list parameters (kept for compatibility but ignored)
                 case('USE_VERLET_LISTS')
@@ -557,7 +686,17 @@ contains
             end do
         end do
         
-        ! Read cutoff values
+        ! Allocate angle type mask if angle calculation is enabled
+        if (calculate_angles) then
+            if (allocated(angle_type_mask)) deallocate(angle_type_mask)
+            allocate(angle_type_mask(n_types, n_types, n_types), stat=io_stat)
+            call check_allocation(io_stat, "angle_type_mask")
+            
+            ! Default: calculate all angles
+            angle_type_mask = .true.
+        end if
+        
+        ! Read cutoff values and angle settings
         rewind(unit)
         do
             read(unit, '(A)', iostat=io_stat) line
@@ -590,6 +729,24 @@ contains
                                 exit
                             end if
                         end do
+                    end if
+                
+                ! Check for ANGLE_TYPES entries
+                else if (key(1:12) == 'ANGLE_TYPES_' .and. calculate_angles) then
+                    ! Parse the angle key to extract type triplet indices
+                    call parse_angle_key(key, i, j, type3, success_parse)
+                    
+                    if (success_parse .and. i > 0 .and. i <= n_types .and. &
+                        j > 0 .and. j <= n_types .and. type3 > 0 .and. type3 <= n_types) then
+                        
+                        ! Set angle mask value
+                        if (trim(value_str) == 'yes' .or. &
+                            trim(value_str) == 'true' .or. &
+                            trim(value_str) == '1') then
+                            angle_type_mask(i, j, type3) = .true.
+                        else
+                            angle_type_mask(i, j, type3) = .false.
+                        end if
                     end if
                 end if
             end if
@@ -696,6 +853,7 @@ contains
     !> Deallocates the configuration data array.
     subroutine cleanup_config()
         if (allocated(config_data)) deallocate(config_data)
+        if (allocated(angle_type_mask)) deallocate(angle_type_mask)
     end subroutine cleanup_config
 
 end module config_mod
