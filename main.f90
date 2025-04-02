@@ -8,6 +8,7 @@ program coordination_analysis
     use error_mod
     use atom_selection_mod
     use omp_lib
+    use angle_mod
     implicit none
 
     !===============================================================================
@@ -41,14 +42,27 @@ program coordination_analysis
     !===============================================================================
     integer :: io_stat                       ! Status code for I/O operations
     integer :: num_threads                   ! Number of OpenMP threads to use
+    character(len=32) :: arg                 ! Command-line argument buffer
     logical :: setup_file_read = .false.     ! Flag if setup file was successfully read
     logical :: atom_selection_initialized = .false.  ! Track if atom selection was initialized
     logical :: trajectory_header_set = .false.       ! Track if trajectory header was set
+    real(dp) :: prev_box_length(3) = 0.0_dp  ! Track previous box dimensions
+    logical :: box_changed = .false.         ! Flag to track if box dimensions changed
+    
+    ! Box dimension statistics variables
+    integer :: box_change_count = 0           ! Counter for box dimension changes
+    real(dp) :: min_box_volume = 0.0_dp       ! Minimum box volume
+    real(dp) :: max_box_volume = 0.0_dp       ! Maximum box volume
+    real(dp) :: total_box_volume = 0.0_dp     ! Accumulated box volume for average
+    real(dp) :: first_box_volume = 0.0_dp     ! Initial box volume
+    real(dp) :: last_box_volume = 0.0_dp      ! Final box volume
+    real(dp) :: box_volume                    ! Current box volume
     
     ! Variable for type counts and percentages
     integer :: type_count, i, j, k, type1, type2, types_found, temp_id
-    real(dp) :: percentage, box_volume
+    real(dp) :: percentage
     integer, allocatable :: type_counts(:)
+    logical, allocatable :: explicit_pairs(:)   ! Track which pairs were explicitly defined
     
     ! Date and time variables
     character(len=8)  :: date
@@ -76,23 +90,36 @@ program coordination_analysis
     !===============================================================================
     ! Read system dimensions from data file
     !===============================================================================
-    call read_data_file_dims_only(DATA_FILE, n_atoms, n_types_actual, box_length)
-    
-    write(*,'(A)') " SYSTEM CONFIGURATION"
-    write(*,'(A)') " -------------------"
-    write(*,'(A,I0)') " Found atoms:                ", n_atoms 
-    write(*,'(A,I0)') " Found atom types:           ", n_types_actual
-    write(*,*)
-    write(*,'(A)') " System dimensions:"
-    write(*,'(A,F10.4)') "   X length:                 ", box_length(1)
-    write(*,'(A,F10.4)') "   Y length:                 ", box_length(2)
-    write(*,'(A,F10.4)') "   Z length:                 ", box_length(3)
-    write(*,*)
-    
-    ! Calculate box volume
-    box_volume = box_length(1) * box_length(2) * box_length(3)
-    write(*,'(A,F10.1,A)') " Box volume:                 ", box_volume, " cubic Angstroms"
-    write(*,*)
+    if (.not. use_trajectory_box) then
+        call read_data_file_dims_only(DATA_FILE, n_atoms, n_types_actual, box_length)
+        
+        write(*,'(A)') " SYSTEM CONFIGURATION"
+        write(*,'(A)') " -------------------"
+        write(*,'(A,I0)') " Found atoms:                ", n_atoms 
+        write(*,'(A,I0)') " Found atom types:           ", n_types_actual
+        write(*,*)
+        write(*,'(A)') " System dimensions:"
+        write(*,'(A,F10.4)') "   X length:                 ", box_length(1)
+        write(*,'(A,F10.4)') "   Y length:                 ", box_length(2)
+        write(*,'(A,F10.4)') "   Z length:                 ", box_length(3)
+        write(*,*)
+        
+        ! Calculate box volume
+        box_volume = box_length(1) * box_length(2) * box_length(3)
+        write(*,'(A,F10.1,A)') " Box volume:                 ", box_volume, " cubic Angstroms"
+        write(*,*)
+    else
+        ! When using trajectory box, we still need to get atom count and types
+        call read_data_file_dims_only(DATA_FILE, n_atoms, n_types_actual, box_length)
+        
+        write(*,'(A)') " SYSTEM CONFIGURATION"
+        write(*,'(A)') " -------------------"
+        write(*,'(A,I0)') " Found atoms:                ", n_atoms 
+        write(*,'(A,I0)') " Found atom types:           ", n_types_actual
+        write(*,*)
+        write(*,'(A)') " System dimensions will be read from trajectory file"
+        write(*,*)
+    end if
     
     !===============================================================================
     ! Read setup file
@@ -132,9 +159,19 @@ program coordination_analysis
     elements = ''
     include_mask = atom_info%include
     
-    ! Allocate and initialize type counts array
-    allocate(type_counts(n_types))
+    ! Allocate and initialize type counts and explicit pairs arrays
+    allocate(type_counts(n_types), explicit_pairs(n_pairs))
     type_counts = 0
+    explicit_pairs = .false.
+    
+    ! Mark pairs that were explicitly defined in setup.txt
+    ! We'll consider a pair as explicitly defined if it doesn't use the default cutoff
+    ! or if a self-interaction pair (same type) which is always defined
+    do i = 1, n_pairs
+        if (pairs(i)%cutoff /= DEFAULT_CUTOFF .or. pairs(i)%type1_id == pairs(i)%type2_id) then
+            explicit_pairs(i) = .true.
+        end if
+    end do
     
     ! Read first frame to get atom types
     if (setup_file_read) then
@@ -143,6 +180,25 @@ program coordination_analysis
     else
         call read_trajectory_frame_noupdate(coords, atom_types, elements, box_length, &
                                       frame, eof, atom_info, INPUT_FILE)
+    end if
+    
+    ! If using trajectory box dimensions, use them from the first frame
+    if (use_trajectory_box) then
+        write(*,'(A)') " System dimensions from trajectory:"
+        write(*,'(A,F10.4)') "   X length:                 ", box_length(1)
+        write(*,'(A,F10.4)') "   Y length:                 ", box_length(2)
+        write(*,'(A,F10.4)') "   Z length:                 ", box_length(3)
+        write(*,*)
+        
+        ! Calculate box volume
+        box_volume = box_length(1) * box_length(2) * box_length(3)
+        first_box_volume = box_volume
+        min_box_volume = box_volume
+        max_box_volume = box_volume
+        total_box_volume = box_volume
+        
+        write(*,'(A,F10.1,A)') " Box volume:                 ", box_volume, " cubic Angstroms"
+        write(*,*)
     end if
     
     ! Count atoms by type
@@ -156,24 +212,22 @@ program coordination_analysis
     write(*,'(A)') " Atom composition:"
     types_found = 0
     do i = 1, n_types
-        if (atom_info(i)%include) then
+        ! Only show types that have atoms and valid names
+        if (atom_info(i)%include .and. type_counts(i) > 0 .and. len_trim(atom_info(i)%name) > 0) then
             types_found = types_found + 1
             type_count = type_counts(i)
             percentage = real(type_count) / real(n_atoms) * 100.0
             
-            ! Format to match ideal output
-            if (i == 1) then
-                write(*,'(A,I0,A,A,A,I0,A,F6.2,A)') "   Type ", i, " (", &
-                    trim(atom_info(i)%name), "):             ", type_count, " atoms (", percentage, "%)"
-            else if (i == 2) then
-                write(*,'(A,I0,A,A,A,I0,A,F6.2,A)') "   Type ", i, " (", &
-                    trim(atom_info(i)%name), "):             ", type_count, " atoms   (", percentage, "%)"
-            else
-                write(*,'(A,I0,A,A,A,I0,A,F6.2,A)') "   Type ", i, " (", &
-                    trim(atom_info(i)%name), "):              ", type_count, " atoms  (", percentage, "%)"
-            end if
+            ! Format with consistent spacing
+            write(*,'(A,I0,A,A,A,I0,A,F6.2,A)') "   Type ", i, " (", &
+                trim(atom_info(i)%name), "):             ", type_count, " atoms (", percentage, "%)"
         end if
     end do
+
+    ! If no valid types were found, show a warning
+    if (types_found == 0) then
+        write(*,'(A)') "   Warning: No valid atom types found with non-zero counts"
+    end if
     write(*,*)
     
     !===============================================================================
@@ -197,12 +251,26 @@ program coordination_analysis
         write(*,'(A,A,A,A)') " Frame selection:           beginning to ", trim(end_frame_str)
     end if
     
-    write(*,'(A,I0)') " Cell update frequency:     ", cell_update_freq
-    if (selective_rebuild) then
-        write(*,'(A)') " Selective cell rebuilding: True"
+    ! Print calculation method info
+    if (use_cell_list) then
+        write(*,'(A)') " Calculation method:        Cell List"
+        write(*,'(A,I0)') " Cell update frequency:     ", cell_update_freq
+        if (selective_rebuild) then
+            write(*,'(A)') " Selective cell rebuilding: True"
+        else
+            write(*,'(A)') " Selective cell rebuilding: False"
+        end if
     else
-        write(*,'(A)') " Selective cell rebuilding: False"
+        write(*,'(A)') " Calculation method:        Direct (O(n²))"
+        write(*,'(A)') " Note: Direct method may be slower but useful for validation"
     end if
+    
+    if (use_trajectory_box) then
+        write(*,'(A)') " Box dimensions:           From trajectory"
+    else
+        write(*,'(A)') " Box dimensions:           From data file"
+    end if
+    
     write(*,'(A,I0)') " OpenMP threads:            ", num_threads
     write(*,*)
     
@@ -253,31 +321,56 @@ program coordination_analysis
     !===============================================================================
     write(*,'(A)') " PAIR CUTOFFS"
     write(*,'(A)') " -----------"
-    ! Display pair cutoffs - using consistent formatting
+    
+    ! Display only pair cutoffs explicitly defined in setup file
+    k = 0 ! Counter for number of explicit pairs
     do i = 1, n_pairs
         ! Extract types for this pair
         type1 = pairs(i)%type1_id
         type2 = pairs(i)%type2_id
+        
+        ! Skip pairs where either type has 0 atoms or empty names
+        if (type_counts(type1) == 0 .or. type_counts(type2) == 0) cycle
+        if (len_trim(atom_info(type1)%name) == 0 .or. len_trim(atom_info(type2)%name) == 0) cycle
+        
+        ! Skip pairs that weren't explicitly defined in setup.txt
+        if (.not. explicit_pairs(i)) cycle
         
         ! Use a safer consistent format that works for all cases
         write(*,'(A,I0,A,A,A,I0,A,A,A,F5.3,A)') &
             " Type ", type1, " (", trim(atom_info(type1)%name), ") - Type ", &
             type2, " (", trim(atom_info(type2)%name), "):   ", &
             pairs(i)%cutoff, " Angstrom"
+        
+        k = k + 1
     end do
+    
+    ! Display message if no explicit pairs were found
+    if (k == 0) then
+        write(*,'(A)') " No explicit pair cutoffs defined in setup file"
+    end if
     write(*,*)
     
-    ! Set up analysis - Initialize coordination and spatial partitioning
+    ! Set up analysis - Initialize coordination
     call initialize_coordination(n_atoms, n_types, atom_info)
-    call initialize_cell_list(box_length, get_cutoffs(), n_atoms)
     
-    ! Display cell list parameters section
-    write(*,'(A)') " CELL LIST PARAMETERS"
-    write(*,'(A)') " ------------------"
-    write(*,'(A,F10.4,A)') " Cell size:                 ", cell_size, " Angstrom"
-    write(*,'(A,I0,A,I0,A,I0)') " Grid dimensions:           ", n_cells_x, " x ", n_cells_y, " x ", n_cells_z
-    write(*,'(A,I0)') " Total cells:               ", n_cells_x * n_cells_y * n_cells_z
-    write(*,*)
+    ! Initialize cell list only if using that method
+    if (use_cell_list) then
+        call initialize_cell_list(box_length, get_cutoffs(), n_atoms)
+        
+        ! Display cell list parameters section
+        write(*,'(A)') " CELL LIST PARAMETERS"
+        write(*,'(A)') " ------------------"
+        write(*,'(A,F10.4,A)') " Cell size:                 ", cell_size, " Angstrom"
+        write(*,'(A,I0,A,I0,A,I0)') " Grid dimensions:           ", n_cells_x, " x ", n_cells_y, " x ", n_cells_z
+        write(*,'(A,I0)') " Total cells:               ", n_cells_x * n_cells_y * n_cells_z
+        write(*,*)
+    end if
+    
+    ! Initialize angle calculation if enabled
+    if (calculate_angles) then
+        call init_angle_analysis(n_atoms, n_types, atom_info)
+    end if
     
     ! Initialize I/O
     if (setup_file_read) then
@@ -294,10 +387,10 @@ program coordination_analysis
     write(*,'(A,I0)') " Frames to process:         ", total_frames
     
     ! Display calculation method
-    if (use_verlet_lists) then
-        write(*,'(A)') " Method:                    Hybrid Cell-List/Verlet-List"
+    if (use_cell_list) then
+        write(*,'(A)') " Method:                    Cell-List"
     else
-        write(*,'(A)') " Method:                    Traditional Cell-List"
+        write(*,'(A)') " Method:                    Direct O(n²)"
     end if
     write(*,*)
     
@@ -309,14 +402,54 @@ program coordination_analysis
     !===========================================================================
     frame = 0  ! Reset frame counter
     start_time = omp_get_wtime()
-    
+
+    ! Initialize previous box dimensions
+    prev_box_length = box_length
+
     do while (.not. eof)
         call read_trajectory_frame(coords, atom_types, elements, box_length, &
-                                frame, eof, atom_info)
+                                 frame, eof, atom_info)
         if (eof) exit
         
+        ! Check if box dimensions have changed when using trajectory box
+        box_changed = .false.
+        if (use_trajectory_box) then
+            if (abs(box_length(1) - prev_box_length(1)) > 1.0e-6_dp .or. &
+                abs(box_length(2) - prev_box_length(2)) > 1.0e-6_dp .or. &
+                abs(box_length(3) - prev_box_length(3)) > 1.0e-6_dp) then
+                box_changed = .true.
+                prev_box_length = box_length
+                
+                ! Update box statistics
+                box_change_count = box_change_count + 1
+                
+                ! Calculate current box volume
+                box_volume = box_length(1) * box_length(2) * box_length(3)
+                last_box_volume = box_volume  ! Will contain the final volume at end
+                
+                ! Update min/max statistics
+                min_box_volume = min(min_box_volume, box_volume)
+                max_box_volume = max(max_box_volume, box_volume)
+                
+                total_box_volume = total_box_volume + box_volume
+            end if
+        end if
+        
+        ! Calculate coordination, only forcing rebuild if box actually changed
+        ! Only calculate coordination for explicitly defined pairs
         call calculate_coordination(coords, atom_types, n_atoms, box_length, &
-                                 frame, include_mask)
+                                  frame, include_mask, box_changed)
+        
+        ! Calculate angles if enabled - with quiet mode for all frames except first
+        if (calculate_angles) then
+            if (frame == 0) then
+                ! First frame shows full output
+                call compute_angles(coords, atom_types, n_atoms, box_length, frame, atom_info)
+            else
+                ! Subsequent frames use quiet mode
+                call compute_angles(coords, atom_types, n_atoms, box_length, frame, atom_info, .true.)
+            end if
+        end if
         
         call write_output_frame(frame, elements, atom_types, coord_numbers, n_atoms, atom_info)
         call update_progress(frame, total_frames)
@@ -346,21 +479,61 @@ program coordination_analysis
                           real(frame)/max(end_time - start_time, 1.0e-6_dp), " frames/second"
     
     ! Display calculation method
-    if (use_verlet_lists) then
-        write(*,'(A)') " Method used:               Hybrid Cell-List/Verlet-List"
+    if (use_cell_list) then
+        write(*,'(A)') " Method used:               Cell-List"
     else
-        write(*,'(A)') " Method used:               Traditional Cell-List"
+        write(*,'(A)') " Method used:               Direct O(n²)"
     end if
     write(*,*)
+    
+    ! Display box dimension statistics if trajectory box was used
+    if (use_trajectory_box) then
+        write(*,'(A)') " BOX DIMENSION STATISTICS"
+        write(*,'(A)') " ----------------------"
+        write(*,'(A,I0,A,I0,A)') " Box dimension changes: ", box_change_count, " (", &
+                              nint(real(box_change_count)/max(1,frame)*100.0), "% of frames)"
+        
+        if (frame > 0) then
+            write(*,'(A,F10.3,A)') " Initial box volume: ", first_box_volume, " cubic Angstroms"
+            write(*,'(A,F10.3,A)') " Final box volume:   ", last_box_volume, " cubic Angstroms"
+            write(*,'(A,F10.3,A)') " Change percentage:  ", &
+                (last_box_volume-first_box_volume)/first_box_volume*100.0, "%"
+            write(*,'(A,F10.3,A)') " Minimum box volume: ", min_box_volume, " cubic Angstroms"
+            write(*,'(A,F10.3,A)') " Maximum box volume: ", max_box_volume, " cubic Angstroms"
+            
+            if (box_change_count > 0) then
+                write(*,'(A,F10.3,A)') " Average box volume: ", &
+                    total_box_volume / real(box_change_count, dp), " cubic Angstroms"
+            end if
+        end if
+        write(*,*)
+    end if
     
     call write_final_report(frame, n_atoms, end_time - start_time, atom_info, &
                           n_types, coord_numbers, atom_types)
     
+    ! Report cell list statistics only if it was used
+    if (use_cell_list) then
+        ! Cell list statistics are reported by write_final_report
+    else
+        write(*,'(A)') " DIRECT CALCULATION USED"
+        write(*,'(A)') " ----------------------"
+        write(*,'(A)') " Cell list statistics not available when using direct calculation method"
+        write(*,*)
+    end if
+    
     ! Cleanup analysis
     call cleanup_io()
     call cleanup_coordination()
-    call cleanup_cell_list()
+    if (use_cell_list) then
+        call cleanup_cell_list()
+    end if
     call cleanup_atom_selection()
+    
+    ! Cleanup angle calculation if enabled
+    if (calculate_angles) then
+        call finalize_angle_analysis()
+    end if
     
     !===============================================================================
     ! Final cleanup
@@ -373,6 +546,7 @@ program coordination_analysis
     if (allocated(include_mask)) deallocate(include_mask)
     if (allocated(atom_info)) deallocate(atom_info)
     if (allocated(type_counts)) deallocate(type_counts)
+    if (allocated(explicit_pairs)) deallocate(explicit_pairs)
     
     ! Print ending timestamp
     call date_and_time(date, time, zone, values)
@@ -410,6 +584,8 @@ contains
         
         integer :: input_unit, io_stat_local, jj
         integer :: idx
+        character(256) :: line
+        real(dp) :: xlo, xhi, ylo, yhi, zlo, zhi
         
         ! Open file
         open(newunit=input_unit, file=filename, status='old', action='read', iostat=io_stat_local)
@@ -418,14 +594,69 @@ contains
             return
         end if
         
-        ! Read header - simplified for atom type detection
-        do idx = 1, 9
-            read(input_unit, '(A)', iostat=io_stat_local)  ! Skip header lines
+        ! Read header - Look for timestep
+        do
+            read(input_unit, '(A)', iostat=io_stat_local) line
             if (io_stat_local /= 0) then
                 eof_out = .true.
+                close(input_unit)
                 return
             end if
+            
+            if (index(line, 'ITEM: NUMBER OF ATOMS') > 0) exit
         end do
+        
+        ! Read atom count
+        read(input_unit, *, iostat=io_stat_local) jj
+        if (io_stat_local /= 0) then
+            eof_out = .true.
+            close(input_unit)
+            return
+        end if
+        
+        ! Read box bounds if using trajectory box
+        read(input_unit, '(A)', iostat=io_stat_local) line  ! ITEM: BOX BOUNDS
+        if (io_stat_local /= 0) then
+            eof_out = .true.
+            close(input_unit)
+            return
+        end if
+        
+        read(input_unit, *, iostat=io_stat_local) xlo, xhi
+        if (io_stat_local /= 0) then
+            eof_out = .true.
+            close(input_unit)
+            return
+        end if
+        
+        read(input_unit, *, iostat=io_stat_local) ylo, yhi
+        if (io_stat_local /= 0) then
+            eof_out = .true.
+            close(input_unit)
+            return
+        end if
+        
+        read(input_unit, *, iostat=io_stat_local) zlo, zhi
+        if (io_stat_local /= 0) then
+            eof_out = .true.
+            close(input_unit)
+            return
+        end if
+        
+        ! Calculate box lengths if using trajectory box dimensions
+        if (use_trajectory_box) then
+            box_length_out(1) = xhi - xlo
+            box_length_out(2) = yhi - ylo
+            box_length_out(3) = zhi - zlo
+        end if
+        
+        ! Skip to atoms section
+        read(input_unit, '(A)', iostat=io_stat_local) line  ! ITEM: ATOMS
+        if (io_stat_local /= 0) then
+            eof_out = .true.
+            close(input_unit)
+            return
+        end if
         
         ! Read atom data - simplified version
         do idx = 1, min(n_atoms, size(coords_out, 1))
