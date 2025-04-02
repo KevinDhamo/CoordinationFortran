@@ -2,7 +2,8 @@
 !>
 !> This module implements the core algorithm for calculating atomic coordination
 !> numbers between different atom types. It uses a cell-based spatial partitioning approach
-!> for efficient neighbor finding.
+!> for efficient neighbor finding, but can also use a direct calculation approach for 
+!> validation purposes.
 !>
 !> The module supports parallel execution through OpenMP and can track both
 !> coordination numbers and the specific neighbor atom IDs.
@@ -41,6 +42,9 @@ module coordination_mod
     !> Flag to show neighbor atom IDs in output
     public :: show_neighbors
 
+    !> Count of neighbors for each atom/pair
+    public :: neighbor_counts
+    
     !===============================================================================
     ! Module variables
     !===============================================================================
@@ -161,6 +165,8 @@ contains
     !>
     !> Main function for calculating coordination numbers between all atoms
     !> in the system based on their positions and the specified cutoff distances.
+    !> Can use either cell list or direct (O(n²)) calculation method based on 
+    !> the use_cell_list configuration option.
     !>
     !> @param[in] coords Atom coordinates
     !> @param[in] atom_types Atom type indices
@@ -184,8 +190,14 @@ contains
         do_force_rebuild = .false.
         if (present(force_rebuild)) do_force_rebuild = force_rebuild
         
-        ! Use traditional cell list method
-        call calculate_coordination_cell(coords, atom_types, n_atoms, box_length, frame, include_mask, do_force_rebuild)
+        ! Use appropriate calculation method based on configuration
+        if (use_cell_list) then
+            ! Use cell list method for efficient O(n) calculation
+            call calculate_coordination_cell(coords, atom_types, n_atoms, box_length, frame, include_mask, do_force_rebuild)
+        else
+            ! Use direct O(n²) method for validation
+            call calculate_coordination_direct(coords, atom_types, n_atoms, box_length, include_mask)
+        end if
     end subroutine calculate_coordination
 
     !> @brief Calculate coordination using cell lists
@@ -239,7 +251,7 @@ contains
                     call process_cell_atoms(ix, iy, iz, coords, atom_types, &
                                           box_length, include_mask)
                                           
-                    ! Process atoms in neighboring cells
+                    ! Process atoms in neighboring cells with ordering to avoid double counting
                     call process_neighbor_cells(neighbor_cells, n_neighbors, ix, iy, iz, &
                                               coords, atom_types, box_length, include_mask)
                 end do
@@ -247,6 +259,53 @@ contains
         end do
         !$OMP END PARALLEL DO
     end subroutine calculate_coordination_cell
+
+    !> @brief Calculate coordination using direct O(n²) method
+    !>
+    !> This function calculates coordination numbers using a direct O(n²) approach
+    !> without spatial partitioning. This is slower but useful for validation and testing.
+    !>
+    !> @param[in] coords Atom coordinates
+    !> @param[in] atom_types Atom type indices
+    !> @param[in] n_atoms Number of atoms in the system
+    !> @param[in] box_length Box dimensions in x, y, z
+    !> @param[in] include_mask Mask indicating which atom types to include
+    subroutine calculate_coordination_direct(coords, atom_types, n_atoms, box_length, include_mask)
+        real(dp), intent(in) :: coords(:,:)
+        integer, intent(in) :: atom_types(:)
+        integer, intent(in) :: n_atoms
+        real(dp), intent(in) :: box_length(3)
+        logical, intent(in) :: include_mask(:)
+        
+        integer :: i, j
+        
+        ! Reset coordination arrays
+        coord_numbers = 0
+        neighbor_counts = 0
+        
+        ! Display information about using direct method (only once)
+        if (.not. setup_shown) then
+            write(*,'(A)') " Using direct O(n²) calculation method for coordination"
+            write(*,'(A)') " Note: This method is slower but can be used for validation"
+            setup_shown = .true.
+        end if
+        
+        ! Compute coordination numbers by checking all pairs
+        !$OMP PARALLEL DO PRIVATE(j) SCHEDULE(guided)
+        do i = 1, n_atoms
+            ! Skip if atom type is excluded
+            if (.not. include_mask(atom_types(i))) cycle
+            
+            do j = i+1, n_atoms  ! Start from i+1 to avoid self-coordination
+                ! Skip if atom type is excluded
+                if (.not. include_mask(atom_types(j))) cycle
+                
+                ! Process this atom pair
+                call process_atom_pair(i, j, coords, atom_types, box_length, include_mask)
+            end do
+        end do
+        !$OMP END PARALLEL DO
+    end subroutine calculate_coordination_direct
 
     !> @brief Process atom pairs within a single cell
     !>
@@ -308,12 +367,22 @@ contains
         real(dp), intent(in) :: box_length(3)
         logical, intent(in) :: include_mask(:)
         
-        integer :: k
+        integer :: k, current_cell_idx, neighbor_cell_idx
+        
+        ! Calculate cell index for the current cell
+        current_cell_idx = cell_index(ix, iy, iz)
         
         do k = 1, n_neighbors
-            call process_cell_pair(ix, iy, iz, &
-                                 neighbor_cells(k,1), neighbor_cells(k,2), neighbor_cells(k,3), &
-                                 coords, atom_types, box_length, include_mask)
+            ! Calculate cell index for the neighbor cell
+            neighbor_cell_idx = cell_index(neighbor_cells(k,1), neighbor_cells(k,2), neighbor_cells(k,3))
+            
+            ! Only process if current cell comes before neighbor cell
+            ! This prevents double counting pairs across different cells
+            if (current_cell_idx < neighbor_cell_idx) then
+                call process_cell_pair(ix, iy, iz, &
+                                    neighbor_cells(k,1), neighbor_cells(k,2), neighbor_cells(k,3), &
+                                    coords, atom_types, box_length, include_mask)
+            end if
         end do
     end subroutine process_neighbor_cells
 
@@ -481,6 +550,27 @@ contains
         ! Pair not found
         idx = -1
     end subroutine get_pair_index
+
+    !> @brief Helper function to calculate a unique cell index
+    !>
+    !> Generates a unique integer identifier for a cell based on its 3D indices
+    !> This is used for consistent ordering of cell pairs to avoid double counting
+    !>
+    !> @param[in] ix X-coordinate of the cell
+    !> @param[in] iy Y-coordinate of the cell
+    !> @param[in] iz Z-coordinate of the cell
+    !> @return Unique integer identifier for the cell
+    function cell_index(ix, iy, iz) result(idx)
+        integer, intent(in) :: ix, iy, iz
+        integer :: idx
+        integer :: nx, ny, nz
+        
+        ! Get grid dimensions
+        call get_cell_grid_dims(nx, ny, nz)
+        
+        ! Calculate unique index based on cell coordinates
+        idx = ix + (iy-1)*nx + (iz-1)*nx*ny
+    end function cell_index
 
     !> @brief Clean up coordination analysis resources
     !>
