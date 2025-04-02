@@ -20,14 +20,14 @@ PAIR_CUTOFF_2_3=2.5
 PAIR_CUTOFF_3_3=2.5
 
 ################################################################################
-# INPUT/OUTPUT FILES                                                           #
+# INPUT/OUTPUT FILES
 ################################################################################
 INPUT_DATA=lammps.data
 INPUT_TRAJECTORY=trajectory.dmp
 OUTPUT_FILE=coordination_numbers.dat
 
 ################################################################################
-# ANALYSIS OPTIONS                                                             #
+# ANALYSIS OPTIONS
 ################################################################################
 START_FRAME=0
 END_FRAME=all
@@ -36,25 +36,50 @@ SHOW_NEIGHBORS=no
 USE_TRAJECTORY_BOX=no
 
 ################################################################################
-# TRAJECTORY PARSING                                                           #
+# ANGLE CALCULATION OPTIONS
+################################################################################
+CALCULATE_ANGLES=no
+ANGLE_OUTPUT_FILE=angles.dat
+MIN_ANGLE_DEGREE=0.0
+MAX_ANGLE_DEGREE=91.0
+ANGLE_FILTER_TYPES=no
+
+ANGLE_TYPES_1_1_1=no
+ANGLE_TYPES_1_1_3=no
+ANGLE_TYPES_1_3_1=no
+ANGLE_TYPES_1_3_3=no
+ANGLE_TYPES_3_1_1=no
+ANGLE_TYPES_3_1_3=no
+ANGLE_TYPES_3_3_1=no
+ANGLE_TYPES_3_3_3=no
+
+ANGLE_BATCH_SIZE=1000
+
+################################################################################
+# TRAJECTORY PARSING
 ################################################################################
 TRAJECTORY_HEADER=ITEM: ATOMS id type x y z
 
 ################################################################################
+# CALCULATION METHOD
+################################################################################
+USE_CELL_LIST=yes
+
+################################################################################
 # ADVANCED SPATIAL PARTITIONING
 ################################################################################
-CELL_SIZE_FACTOR=1.0                                               # TBA
-MAX_ATOMS_PER_CELL=50                                              # TBA
-REBUILD_THRESHOLD=0.1                                              # TBA
+CELL_SIZE_FACTOR=1.0
+MAX_ATOMS_PER_CELL=50
+REBUILD_THRESHOLD=0.1
 CELL_UPDATE_FREQ=20
-SELECTIVE_REBUILD=no
+SELECTIVE_REBUILD=yes
 
 ################################################################################
 # OUTPUT CONFIGURATION
 ################################################################################
-MAX_NEIGHBORS=50                                                   # TBA
-PROGRESS_BAR_WIDTH=50                                              # TBA
-VERBOSE=no                                                         # TBA
+MAX_NEIGHBORS=50
+PROGRESS_BAR_WIDTH=50
+VERBOSE=no
 
 ################################################################################
 # EXPLICIT COLUMN MAPPING
