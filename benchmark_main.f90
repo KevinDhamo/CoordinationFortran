@@ -48,6 +48,8 @@ program benchmark_main
     logical :: setup_file_read = .false.     ! Flag if setup file was successfully read
     logical :: atom_selection_initialized = .false.  ! Track if atom selection was initialized
     logical :: trajectory_header_set = .false.       ! Track if trajectory header was set
+    real(dp) :: prev_box_length(3) = 0.0_dp  ! Track previous box dimensions
+    logical :: box_changed = .false.         ! Flag to track if box dimensions changed
     
     ! Benchmark variables
     integer :: max_threads                   ! Maximum available OpenMP threads
@@ -356,6 +358,9 @@ program benchmark_main
             call initialize_io(INPUT_FILE, OUTPUT_FILE, total_frames)
         end if
         
+        ! Initialize previous box dimensions
+        prev_box_length = box_length
+        
         ! Start timing
         bench_start_time = omp_get_wtime()
             
@@ -364,9 +369,20 @@ program benchmark_main
             call read_trajectory_frame(coords, atom_types, elements, box_length, &
                                      bench_frame, eof, atom_info)
             if (eof) exit
+            
+            ! Check if box dimensions have changed when using trajectory box
+            box_changed = .false.
+            if (use_trajectory_box) then
+                if (abs(box_length(1) - prev_box_length(1)) > 1.0e-6_dp .or. &
+                    abs(box_length(2) - prev_box_length(2)) > 1.0e-6_dp .or. &
+                    abs(box_length(3) - prev_box_length(3)) > 1.0e-6_dp) then
+                    box_changed = .true.
+                    prev_box_length = box_length
+                end if
+            end if
                 
             call calculate_coordination(coords, atom_types, n_atoms, box_length, &
-                                      bench_frame, include_mask)
+                                      bench_frame, include_mask, box_changed)
             
             ! Update progress (with reduced frequency for benchmark)
             if (mod(bench_frame, 10) == 0) then
@@ -488,6 +504,8 @@ contains
         
         integer :: input_unit, io_stat_local, jj
         integer :: idx
+        character(256) :: line
+        real(dp) :: xlo, xhi, ylo, yhi, zlo, zhi
         
         ! Open file
         open(newunit=input_unit, file=filename, status='old', action='read', iostat=io_stat_local)
@@ -496,14 +514,69 @@ contains
             return
         end if
         
-        ! Read header - simplified for atom type detection
-        do idx = 1, 9
-            read(input_unit, '(A)', iostat=io_stat_local)  ! Skip header lines
+        ! Read header - Look for timestep
+        do
+            read(input_unit, '(A)', iostat=io_stat_local) line
             if (io_stat_local /= 0) then
                 eof_out = .true.
+                close(input_unit)
                 return
             end if
+            
+            if (index(line, 'ITEM: NUMBER OF ATOMS') > 0) exit
         end do
+        
+        ! Read atom count
+        read(input_unit, *, iostat=io_stat_local) jj
+        if (io_stat_local /= 0) then
+            eof_out = .true.
+            close(input_unit)
+            return
+        end if
+        
+        ! Read box bounds if using trajectory box
+        read(input_unit, '(A)', iostat=io_stat_local) line  ! ITEM: BOX BOUNDS
+        if (io_stat_local /= 0) then
+            eof_out = .true.
+            close(input_unit)
+            return
+        end if
+        
+        read(input_unit, *, iostat=io_stat_local) xlo, xhi
+        if (io_stat_local /= 0) then
+            eof_out = .true.
+            close(input_unit)
+            return
+        end if
+        
+        read(input_unit, *, iostat=io_stat_local) ylo, yhi
+        if (io_stat_local /= 0) then
+            eof_out = .true.
+            close(input_unit)
+            return
+        end if
+        
+        read(input_unit, *, iostat=io_stat_local) zlo, zhi
+        if (io_stat_local /= 0) then
+            eof_out = .true.
+            close(input_unit)
+            return
+        end if
+        
+        ! Calculate box lengths if using trajectory box dimensions
+        if (use_trajectory_box) then
+            box_length_out(1) = xhi - xlo
+            box_length_out(2) = yhi - ylo
+            box_length_out(3) = zhi - zlo
+        end if
+        
+        ! Skip to atoms section
+        read(input_unit, '(A)', iostat=io_stat_local) line  ! ITEM: ATOMS
+        if (io_stat_local /= 0) then
+            eof_out = .true.
+            close(input_unit)
+            return
+        end if
         
         ! Read atom data - simplified version
         do idx = 1, min(n_atoms, size(coords_out, 1))
