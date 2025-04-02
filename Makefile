@@ -30,6 +30,7 @@ SRCS = types_mod.f90 \
        cell_list_mod.f90 \
        atom_selection_mod.f90 \
        coordination_mod.f90 \
+       angle_mod.f90 \
        progress_mod.f90 \
        data_file_io_mod.f90 \
        trajectory_io_mod.f90 \
@@ -87,13 +88,14 @@ config_mod.o: config_mod.f90 types_mod.o error_mod.o
 cell_list_mod.o: cell_list_mod.f90 types_mod.o config_mod.o error_mod.o
 atom_selection_mod.o: atom_selection_mod.f90 types_mod.o config_mod.o error_mod.o
 coordination_mod.o: coordination_mod.f90 types_mod.o config_mod.o cell_list_mod.o error_mod.o atom_selection_mod.o
+angle_mod.o: angle_mod.f90 types_mod.o config_mod.o coordination_mod.o error_mod.o
 progress_mod.o: progress_mod.f90 types_mod.o config_mod.o
 data_file_io_mod.o: data_file_io_mod.f90 types_mod.o config_mod.o error_mod.o
 trajectory_io_mod.o: trajectory_io_mod.f90 types_mod.o config_mod.o error_mod.o
 output_cache_mod.o: output_cache_mod.f90 types_mod.o config_mod.o error_mod.o
 output_io_mod.o: output_io_mod.f90 types_mod.o config_mod.o error_mod.o coordination_mod.o cell_list_mod.o atom_selection_mod.o
 io_mod.o: io_mod.f90 types_mod.o trajectory_io_mod.o data_file_io_mod.o output_io_mod.o progress_mod.o
-main.o: main.f90 types_mod.o config_mod.o cell_list_mod.o coordination_mod.o io_mod.o error_mod.o atom_selection_mod.o
+main.o: main.f90 types_mod.o config_mod.o cell_list_mod.o coordination_mod.o io_mod.o error_mod.o atom_selection_mod.o angle_mod.o
 benchmark_main.o: benchmark_main.f90 types_mod.o config_mod.o cell_list_mod.o coordination_mod.o io_mod.o error_mod.o atom_selection_mod.o
 
 # Compilation rule
