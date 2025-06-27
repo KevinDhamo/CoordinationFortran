@@ -48,7 +48,7 @@ module config_mod
     logical, parameter, public :: VERBOSE = .false. ! Reduced output verbosity
 
     !===============================================================================
-    ! Cell list configuration
+    ! Cell list configuration (FIXED: All now read from setup.txt)
     !===============================================================================
     !> Whether to use cell lists for coordination calculations
     logical, public :: use_cell_list = .true.
@@ -57,13 +57,16 @@ module config_mod
     integer, public :: cell_update_freq = 5
     
     !> Factor to multiply cutoff by to determine cell size
-    real(dp), parameter, public :: CELL_SIZE_FACTOR = 1.0_dp
+    real(dp), public :: CELL_SIZE_FACTOR = 1.0_dp
     
-    !> Initial maximum number of atoms per cell
-    integer, parameter, public :: MAX_ATOMS_PER_CELL = 50
+    !> Maximum number of atoms per cell (was parameter, now variable)
+    integer, public :: MAX_ATOMS_PER_CELL = 50
     
-    !> Threshold of atom movement that triggers cell list rebuild
-    real(dp), parameter, public :: REBUILD_THRESHOLD = 0.1_dp
+    !> Threshold of atom movement that triggers cell list rebuild (was parameter, now variable)
+    real(dp), public :: REBUILD_THRESHOLD = 0.1_dp
+    
+    !> Enable selective cell list rebuilding for performance
+    logical, public :: selective_rebuild = .false.
 
     !===============================================================================
     ! Verlet list configuration (kept for compatibility but not used)
@@ -91,6 +94,7 @@ module config_mod
     
     !> Number of CPU cores requested for parallel execution
     integer, public :: requested_cores = 0
+    
     !> Flag to enable/disable angle type filtering
     logical, public :: angle_filter_types = .true.
 
@@ -102,9 +106,6 @@ module config_mod
     
     !> Original string for end frame from setup file
     character(len=32), public :: end_frame_str = "unlimited"
-    
-    !> Enable selective cell list rebuilding for performance
-    logical, public :: selective_rebuild = .false.
     
     !> Path to the input data file specified in setup
     character(len=256), public :: input_data_file = ''
@@ -142,10 +143,10 @@ module config_mod
     !> Type triplet filtering array
     logical, allocatable, public :: angle_type_mask(:,:,:)
 
-! Add these to the public variables in config_mod.f90
-real(dp), public :: min_angle_degree = 0.0_dp
-real(dp), public :: max_angle_degree = 180.0_dp
-integer, public :: angle_batch_size = 1000
+    !> Angle filtering parameters
+    real(dp), public :: min_angle_degree = 0.0_dp
+    real(dp), public :: max_angle_degree = 180.0_dp
+    integer, public :: angle_batch_size = 1000
 
     !===============================================================================
     ! Type definition for configuration key-value pairs
@@ -184,8 +185,6 @@ contains
         start_frame = 0
         end_frame = 0
         end_frame_str = "unlimited"
-        cell_update_freq = 5  ! Default value of 5, can be overridden in setup.txt
-        selective_rebuild = .false.
         input_data_file = DATA_FILE
         input_trajectory = INPUT_FILE
         output_data_file = OUTPUT_FILE
@@ -196,14 +195,25 @@ contains
         calculate_angles = .false.
         angle_output_file = 'angles.dat'
         
-        ! Initialize cell list parameter
-        use_cell_list = .true.  ! Default to using cell list method
+        ! Initialize cell list parameters
+        use_cell_list = .true.
+        cell_update_freq = 5
+        CELL_SIZE_FACTOR = 1.0_dp
+        MAX_ATOMS_PER_CELL = 50
+        REBUILD_THRESHOLD = 0.1_dp
+        selective_rebuild = .false.
         
         ! Initialize Verlet list parameters (disabled by default)
         use_verlet_lists = .false.
         verlet_skin_distance = 1.0_dp
         verlet_rebuild_threshold = 0.5_dp
         show_verlet_stats = .false.
+        
+        ! Initialize angle parameters
+        min_angle_degree = 0.0_dp
+        max_angle_degree = 180.0_dp
+        angle_batch_size = 1000
+        angle_filter_types = .true.
     end subroutine initialize_config
 
     !> @brief Read configuration from the configuration file
@@ -483,6 +493,24 @@ contains
                         use_cell_list = .false.
                     end if
                 
+                ! FIXED: Add all spatial partitioning parameters
+                case('CELL_SIZE_FACTOR')
+                    read(value_str, *, iostat=io_stat) CELL_SIZE_FACTOR
+                    if (io_stat /= 0) CELL_SIZE_FACTOR = 1.0_dp
+                    if (CELL_SIZE_FACTOR <= 0.0_dp) CELL_SIZE_FACTOR = 1.0_dp
+                
+                case('MAX_ATOMS_PER_CELL')
+                    read(value_str, *, iostat=io_stat) MAX_ATOMS_PER_CELL
+                    if (io_stat /= 0) MAX_ATOMS_PER_CELL = 50
+                    if (MAX_ATOMS_PER_CELL <= 0) MAX_ATOMS_PER_CELL = 50
+                
+                case('REBUILD_THRESHOLD')
+                    read(value_str, *, iostat=io_stat) REBUILD_THRESHOLD
+                    if (io_stat /= 0) REBUILD_THRESHOLD = 0.1_dp
+                    if (REBUILD_THRESHOLD <= 0.0_dp .or. REBUILD_THRESHOLD >= 1.0_dp) then
+                        REBUILD_THRESHOLD = 0.1_dp
+                    end if
+                
                 case('INPUT_DATA')
                     input_data_file = trim(value_str)
                 
@@ -526,25 +554,28 @@ contains
                     else
                         calculate_angles = .false.
                     end if
-case('ANGLE_FILTER_TYPES')
-    if (trim(value_str) == 'yes' .or. &
-        trim(value_str) == 'true' .or. &
-        trim(value_str) == '1') then
-        angle_filter_types = .true.
-    else
-        angle_filter_types = .false.
-    end if
+                    
+                case('ANGLE_FILTER_TYPES')
+                    if (trim(value_str) == 'yes' .or. &
+                        trim(value_str) == 'true' .or. &
+                        trim(value_str) == '1') then
+                        angle_filter_types = .true.
+                    else
+                        angle_filter_types = .false.
+                    end if
+                    
                 case('MIN_ANGLE_DEGREE')
-    read(value_str, *, iostat=io_stat) min_angle_degree
-    if (io_stat /= 0) min_angle_degree = 0.0_dp
-    
-case('MAX_ANGLE_DEGREE')
-    read(value_str, *, iostat=io_stat) max_angle_degree
-    if (io_stat /= 0) max_angle_degree = 180.0_dp
-    
-case('ANGLE_BATCH_SIZE')
-    read(value_str, *, iostat=io_stat) angle_batch_size
-    if (io_stat /= 0) angle_batch_size = 1000
+                    read(value_str, *, iostat=io_stat) min_angle_degree
+                    if (io_stat /= 0) min_angle_degree = 0.0_dp
+                    
+                case('MAX_ANGLE_DEGREE')
+                    read(value_str, *, iostat=io_stat) max_angle_degree
+                    if (io_stat /= 0) max_angle_degree = 180.0_dp
+                    
+                case('ANGLE_BATCH_SIZE')
+                    read(value_str, *, iostat=io_stat) angle_batch_size
+                    if (io_stat /= 0) angle_batch_size = 1000
+                    
                 case('ANGLE_OUTPUT_FILE')
                     angle_output_file = trim(value_str)
                     
