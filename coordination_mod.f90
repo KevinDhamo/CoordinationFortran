@@ -229,7 +229,7 @@ contains
         do_force_rebuild = .false.
         if (present(force_rebuild)) do_force_rebuild = force_rebuild
         
-        ! Update cell lists
+        ! Update cell lists - include ALL atoms of valid types (not just selected ones)
         call update_cell_list(coords, atom_types, n_atoms, box_length, frame, include_mask, do_force_rebuild)
         
         ! Initialize coordination arrays
@@ -264,6 +264,8 @@ contains
     !>
     !> This function calculates coordination numbers using a direct O(n²) approach
     !> without spatial partitioning. This is slower but useful for validation and testing.
+    !> FIXED: Now correctly handles atom selection - only calculates coordination FOR 
+    !> selected atoms, but considers ALL atoms as potential neighbors.
     !>
     !> @param[in] coords Atom coordinates
     !> @param[in] atom_types Atom type indices
@@ -290,18 +292,22 @@ contains
             setup_shown = .true.
         end if
         
-        ! Compute coordination numbers by checking all pairs
+        ! FIXED: Only calculate coordination FOR selected atoms, but consider ALL atoms as neighbors
         !$OMP PARALLEL DO PRIVATE(j) SCHEDULE(guided)
         do i = 1, n_atoms
-            ! Skip if atom type is excluded
-            if (.not. include_mask(atom_types(i))) cycle
+            ! Skip if atom type is excluded OR atom is not selected
+            if (.not. include_mask(atom_types(i)) .or. .not. is_atom_selected(i)) cycle
             
-            do j = i+1, n_atoms  ! Start from i+1 to avoid self-coordination
-                ! Skip if atom type is excluded
+            ! Check this atom against ALL other atoms (not just selected ones)
+            do j = 1, n_atoms
+                ! Skip self-coordination
+                if (i == j) cycle
+                
+                ! Skip if neighbor atom type is excluded (but don't check selection)
                 if (.not. include_mask(atom_types(j))) cycle
                 
-                ! Process this atom pair
-                call process_atom_pair(i, j, coords, atom_types, box_length, include_mask)
+                ! Process this atom pair - but only update coordination for selected atoms
+                call process_atom_pair_selective(i, j, coords, atom_types, box_length, include_mask)
             end do
         end do
         !$OMP END PARALLEL DO
@@ -309,7 +315,7 @@ contains
 
     !> @brief Process atom pairs within a single cell
     !>
-    !> Computes coordination numbers for atoms located in the same cell.
+    !> FIXED: Now properly handles atom selection in cell-based method.
     !>
     !> @param[in] ix X index of the cell
     !> @param[in] iy Y index of the cell
@@ -334,21 +340,26 @@ contains
         ! Process atom pairs within the cell
         do i = 1, current_cell%n_atoms
             atom_i = current_cell%atoms(i)
-            ! Only filter by atom type, not selection status
-            if (.not. include_mask(atom_types(atom_i))) cycle
+            ! Skip if atom type is excluded OR atom is not selected
+            if (.not. include_mask(atom_types(atom_i)) .or. .not. is_atom_selected(atom_i)) cycle
             
-            do j = i+1, current_cell%n_atoms
+            do j = 1, current_cell%n_atoms
+                ! Skip self-coordination
+                if (i == j) cycle
+                
                 atom_j = current_cell%atoms(j)
-                ! Only filter by atom type, not selection status
-                call process_atom_pair(atom_i, atom_j, coords, atom_types, &
-                                     box_length, include_mask)
+                ! Only check if neighbor atom type is included (don't check selection)
+                if (.not. include_mask(atom_types(atom_j))) cycle
+                
+                call process_atom_pair_selective(atom_i, atom_j, coords, atom_types, &
+                                               box_length, include_mask)
             end do
         end do
     end subroutine process_cell_atoms
 
     !> @brief Process atom pairs between the current cell and neighboring cells
     !>
-    !> Processes coordination between atoms in the specified cell and its neighbors.
+    !> FIXED: Now properly handles atom selection in cell-based method.
     !>
     !> @param[in] neighbor_cells Array of neighbor cell indices
     !> @param[in] n_neighbors Number of neighboring cells
@@ -388,7 +399,7 @@ contains
 
     !> @brief Process atoms between two different cells
     !>
-    !> Calculates coordination numbers between atoms in two different cells.
+    !> FIXED: Now properly handles atom selection in cell-based method.
     !>
     !> @param[in] ix1 X index of first cell
     !> @param[in] iy1 Y index of first cell
@@ -418,26 +429,43 @@ contains
         call get_cell(ix1, iy1, iz1, cell1)
         call get_cell(ix2, iy2, iz2, cell2)
         
-        ! Process atoms between cells
+        ! Process atoms from cell1 to cell2
         do i = 1, cell1%n_atoms
             atom_i = cell1%atoms(i)
-            ! Only filter by atom type, not selection status
-            if (.not. include_mask(atom_types(atom_i))) cycle
+            ! Only process if atom is selected and type is included
+            if (.not. include_mask(atom_types(atom_i)) .or. .not. is_atom_selected(atom_i)) cycle
             
             do j = 1, cell2%n_atoms
                 atom_j = cell2%atoms(j)
-                ! Only filter by atom type, not selection status
-                call process_atom_pair(atom_i, atom_j, coords, atom_types, &
-                                     box_length, include_mask)
+                ! Only check if neighbor atom type is included (don't check selection)
+                if (.not. include_mask(atom_types(atom_j))) cycle
+                
+                call process_atom_pair_selective(atom_i, atom_j, coords, atom_types, &
+                                               box_length, include_mask)
+            end do
+        end do
+        
+        ! Process atoms from cell2 to cell1 (reverse direction)
+        do j = 1, cell2%n_atoms
+            atom_j = cell2%atoms(j)
+            ! Only process if atom is selected and type is included
+            if (.not. include_mask(atom_types(atom_j)) .or. .not. is_atom_selected(atom_j)) cycle
+            
+            do i = 1, cell1%n_atoms
+                atom_i = cell1%atoms(i)
+                ! Only check if neighbor atom type is included (don't check selection)
+                if (.not. include_mask(atom_types(atom_i))) cycle
+                
+                call process_atom_pair_selective(atom_j, atom_i, coords, atom_types, &
+                                               box_length, include_mask)
             end do
         end do
     end subroutine process_cell_pair
 
-    !> @brief Process a single atom pair to check for coordination
+    !> @brief Process a single atom pair to check for coordination (legacy version)
     !>
-    !> Core function that calculates if two atoms are coordinated based on
-    !> their distance and the cutoff for their atom types. Updates coordination
-    !> numbers and neighbor lists.
+    !> DEPRECATED: This is the old version that incorrectly filtered both atoms.
+    !> Use process_atom_pair_selective instead.
     !>
     !> @param[in] atom_i Index of first atom
     !> @param[in] atom_j Index of second atom
@@ -452,11 +480,42 @@ contains
         real(dp), intent(in) :: box_length(3)
         logical, intent(in) :: include_mask(:)
         
+        ! Redirect to the new selective version
+        call process_atom_pair_selective(atom_i, atom_j, coords, atom_types, box_length, include_mask)
+    end subroutine process_atom_pair
+
+    !> @brief Process a single atom pair with proper atom selection handling
+    !>
+    !> FIXED: Core function that calculates if two atoms are coordinated based on
+    !> their distance and the cutoff for their atom types. Only updates coordination
+    !> numbers for SELECTED atoms, but considers all atoms as potential neighbors.
+    !>
+    !> @param[in] atom_i Index of first atom
+    !> @param[in] atom_j Index of second atom
+    !> @param[in] coords Atom coordinates
+    !> @param[in] atom_types Atom type indices
+    !> @param[in] box_length Box dimensions in x, y, z
+    !> @param[in] include_mask Mask indicating which atom types to include
+    subroutine process_atom_pair_selective(atom_i, atom_j, coords, atom_types, box_length, include_mask)
+        integer, intent(in) :: atom_i, atom_j
+        real(dp), intent(in) :: coords(:,:)
+        integer, intent(in) :: atom_types(:)
+        real(dp), intent(in) :: box_length(3)
+        logical, intent(in) :: include_mask(:)
+        
         real(dp) :: dx, dy, dz, r_sq
         integer :: pair_idx
+        logical :: atom_i_selected, atom_j_selected
         
         ! Skip if either atom type is excluded from analysis
         if (.not. include_mask(atom_types(atom_i)) .or. .not. include_mask(atom_types(atom_j))) return
+        
+        ! Check which atoms are selected
+        atom_i_selected = is_atom_selected(atom_i)
+        atom_j_selected = is_atom_selected(atom_j)
+        
+        ! Skip if neither atom is selected (no point in calculating)
+        if (.not. atom_i_selected .and. .not. atom_j_selected) return
         
         ! Calculate distance vector between atoms
         dx = coords(atom_i,1) - coords(atom_j,1)
@@ -474,56 +533,86 @@ contains
         ! Find pair index and update coordination if within cutoff
         call get_pair_index(atom_types(atom_i), atom_types(atom_j), pair_idx)
         if (pair_idx > 0 .and. r_sq <= pairs(pair_idx)%cutoff_sq) then
-            ! Update coordination numbers - use atomic operations for thread safety
-            !$OMP ATOMIC
-            coord_numbers(atom_i,pair_idx) = coord_numbers(atom_i,pair_idx) + 1
-            !$OMP ATOMIC
-            coord_numbers(atom_j,pair_idx) = coord_numbers(atom_j,pair_idx) + 1
+            ! Update coordination numbers ONLY for selected atoms
+            if (atom_i_selected) then
+                !$OMP ATOMIC
+                coord_numbers(atom_i,pair_idx) = coord_numbers(atom_i,pair_idx) + 1
+            end if
             
-            ! Update neighbor lists if enabled
+            if (atom_j_selected) then
+                !$OMP ATOMIC
+                coord_numbers(atom_j,pair_idx) = coord_numbers(atom_j,pair_idx) + 1
+            end if
+            
+            ! Update neighbor lists if enabled (only for selected atoms)
             if (show_neighbors) then
-                call update_neighbor_lists(atom_i, atom_j, pair_idx)
+                call update_neighbor_lists_selective(atom_i, atom_j, pair_idx, atom_i_selected, atom_j_selected)
             end if
         end if
-    end subroutine process_atom_pair
+    end subroutine process_atom_pair_selective
 
-    !> @brief Update neighbor tracking lists for coordination visualization
+    !> @brief Update neighbor tracking lists for coordination visualization (legacy version)
     !>
-    !> Updates the neighbor tracking arrays used for visualizing coordination.
+    !> DEPRECATED: Use update_neighbor_lists_selective instead.
     !>
     !> @param[in] atom_i Index of first atom
     !> @param[in] atom_j Index of second atom
     !> @param[in] pair_idx Index of the atom type pair
     subroutine update_neighbor_lists(atom_i, atom_j, pair_idx)
         integer, intent(in) :: atom_i, atom_j, pair_idx
+        
+        ! Redirect to selective version
+        call update_neighbor_lists_selective(atom_i, atom_j, pair_idx, .true., .true.)
+    end subroutine update_neighbor_lists
+
+    !> @brief Update neighbor tracking lists with proper atom selection handling
+    !>
+    !> FIXED: Updates the neighbor tracking arrays used for visualizing coordination.
+    !> Only updates neighbor lists for atoms that are actually selected.
+    !>
+    !> @param[in] atom_i Index of first atom
+    !> @param[in] atom_j Index of second atom
+    !> @param[in] pair_idx Index of the atom type pair
+    !> @param[in] atom_i_selected Whether atom_i is selected
+    !> @param[in] atom_j_selected Whether atom_j is selected
+    subroutine update_neighbor_lists_selective(atom_i, atom_j, pair_idx, atom_i_selected, atom_j_selected)
+        integer, intent(in) :: atom_i, atom_j, pair_idx
+        logical, intent(in) :: atom_i_selected, atom_j_selected
         integer :: count_i, count_j
         
-        ! Update neighbor counts atomically
-        !$OMP ATOMIC
-        neighbor_counts(atom_i,pair_idx) = neighbor_counts(atom_i,pair_idx) + 1
-        
-        !$OMP ATOMIC
-        neighbor_counts(atom_j,pair_idx) = neighbor_counts(atom_j,pair_idx) + 1
-        
-        ! Get the current counts after the atomic updates
-        !$OMP CRITICAL(get_counts)
-        count_i = neighbor_counts(atom_i,pair_idx)
-        count_j = neighbor_counts(atom_j,pair_idx)
-        !$OMP END CRITICAL(get_counts)
-        
-        ! Store neighbors if we haven't exceeded the maximum
-        if (count_i <= MAX_NEIGHBORS) then
-            !$OMP CRITICAL(update_neighbors_i)
-            coord_neighbors(atom_i,pair_idx,count_i) = atom_j
-            !$OMP END CRITICAL(update_neighbors_i)
+        ! Update neighbor counts and lists only for selected atoms
+        if (atom_i_selected) then
+            !$OMP ATOMIC
+            neighbor_counts(atom_i,pair_idx) = neighbor_counts(atom_i,pair_idx) + 1
+            
+            !$OMP CRITICAL(get_count_i)
+            count_i = neighbor_counts(atom_i,pair_idx)
+            !$OMP END CRITICAL(get_count_i)
+            
+            ! Store neighbor if we haven't exceeded the maximum
+            if (count_i <= MAX_NEIGHBORS) then
+                !$OMP CRITICAL(update_neighbors_i)
+                coord_neighbors(atom_i,pair_idx,count_i) = atom_j
+                !$OMP END CRITICAL(update_neighbors_i)
+            end if
         end if
         
-        if (count_j <= MAX_NEIGHBORS) then
-            !$OMP CRITICAL(update_neighbors_j)
-            coord_neighbors(atom_j,pair_idx,count_j) = atom_i
-            !$OMP END CRITICAL(update_neighbors_j)
+        if (atom_j_selected) then
+            !$OMP ATOMIC
+            neighbor_counts(atom_j,pair_idx) = neighbor_counts(atom_j,pair_idx) + 1
+            
+            !$OMP CRITICAL(get_count_j)
+            count_j = neighbor_counts(atom_j,pair_idx)
+            !$OMP END CRITICAL(get_count_j)
+            
+            ! Store neighbor if we haven't exceeded the maximum
+            if (count_j <= MAX_NEIGHBORS) then
+                !$OMP CRITICAL(update_neighbors_j)
+                coord_neighbors(atom_j,pair_idx,count_j) = atom_i
+                !$OMP END CRITICAL(update_neighbors_j)
+            end if
         end if
-    end subroutine update_neighbor_lists
+    end subroutine update_neighbor_lists_selective
 
     !> @brief Get the pair index for two atom types
     !>
