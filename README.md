@@ -271,8 +271,4 @@ These statistics help diagnose performance issues:
 ```
 
 
-## Contact
 
-For questions, bug reports, or feature requests:
-- Email: author@example.com
-- GitHub Issues: https://github.com/username/coordination-analysis/issues
